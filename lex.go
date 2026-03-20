@@ -25,6 +25,7 @@ type buffer struct {
 	allowEOF    bool
 	allowObjptr bool
 	allowStream bool
+	decDisabled bool
 	eof         bool
 	key         []byte
 	useAES      bool
@@ -567,11 +568,14 @@ func (b *buffer) readObject() Object {
 	}
 
 	if tok.Kind == String && b.key != nil && b.objptr.id != 0 {
-		var err error
-		str := tok.StringVal
-		decrypted, err := decryptString(b.key, b.useAES, b.encVersion, b.objptr, str)
-		if err != nil {
-			panic(err)
+		if !b.decDisabled {
+			str := tok.StringVal
+			decrypted, err := decryptString(b.key, b.useAES, b.encVersion, b.objptr, str)
+			if err != nil {
+				panic(err)
+			}
+		} else {
+			decrypted = tok.StringVal
 		}
 		return Object{Kind: String, StringVal: decrypted}
 	}
@@ -763,6 +767,7 @@ func (b *buffer) readArray() Object {
 
 func (b *buffer) readDict() Object {
 	x := make(map[string]Object)
+	decDisabled := false
 	for {
 		tok := b.readToken()
 		if tok.Kind == Keyword && tok.KeywordVal == ">>" {
@@ -777,7 +782,18 @@ func (b *buffer) readDict() Object {
 			continue
 		}
 		n := tok.NameVal
+
+		if decDisabled && (n == "Contents" || n == "ByteRange") {
+			b.decDisabled = true
+		}
+		
 		x[n] = b.readObject()
+
+		b.decDisabled = false
+
+		if n == "Type" && x[n] == "Sig" {
+			decDisabled = true
+		}
 	}
 
 	if !b.allowStream {
