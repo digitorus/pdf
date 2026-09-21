@@ -3,7 +3,9 @@ package pdf
 import (
 	"bytes"
 	"io"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestReadToken(t *testing.T) {
@@ -113,5 +115,47 @@ func TestReadHexString(t *testing.T) {
 				t.Errorf("readHexString() = %q, want %q", obj.StringVal, tt.want)
 			}
 		})
+	}
+}
+
+// runWithin reports whether f returns within half a second, failing the test if
+// f panics. The time is short because parsers that loop forever also use memory.
+func runWithin(t *testing.T, f func()) bool {
+	t.Helper()
+	done := make(chan any, 1)
+	go func() {
+		defer func() { done <- recover() }()
+		f()
+	}()
+	select {
+	case p := <-done:
+		if p != nil {
+			t.Errorf("panic: %v", p)
+		}
+		return true
+	case <-time.After(500 * time.Millisecond):
+		return false
+	}
+}
+
+func TestReadObjectHexStringAtEOF(t *testing.T) {
+	for _, src := range []string{"<< /Type /Catalog >>\n<ab", "<< /Type /Catalog >>\n<abc"} {
+		var obj Object
+		if !runWithin(t, func() { obj = newBuffer(strings.NewReader(src), 0, 0).readObject() }) {
+			t.Fatalf("readObject(%q) did not return", src)
+		}
+		if obj.Kind != Dict || obj.DictVal["Type"].NameVal != "Catalog" {
+			t.Errorf("readObject(%q) = %s, want the Catalog dictionary", src, objfmt(obj))
+		}
+	}
+}
+
+func TestReadObjectArrayOpenAtEndobj(t *testing.T) {
+	for _, src := range []string{"[ 1 2", "<< /Kids [ 1 2 >>"} {
+		r := &Reader{}
+		setObjects(r, src)
+		if !runWithin(t, func() { r.GetObject(1) }) {
+			t.Fatalf("GetObject for %q did not return", src)
+		}
 	}
 }

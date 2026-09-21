@@ -31,6 +31,7 @@ type buffer struct {
 	encVersion  int
 	objptr      objptr
 	line        int
+	depth       int
 }
 
 var bufferPool = sync.Pool{
@@ -59,6 +60,7 @@ func newBuffer(r io.Reader, offset int64, encVersion int) *buffer {
 	b.encVersion = encVersion
 	b.objptr = objptr{}
 	b.line = 1
+	b.depth = 0
 	return b
 }
 
@@ -219,6 +221,9 @@ func (b *buffer) readHexString() Object {
 			break
 		}
 		if isSpace(c) {
+			if b.eof {
+				break
+			}
 			goto Loop
 		}
 	Loop2:
@@ -231,6 +236,9 @@ func (b *buffer) readHexString() Object {
 			break
 		}
 		if isSpace(c2) {
+			if b.eof {
+				break
+			}
 			goto Loop2
 		}
 		x := unhex(c)<<4 | unhex(c2)
@@ -538,6 +546,8 @@ Loop:
 }
 
 func (b *buffer) readObject() Object {
+	b.nest()
+	defer func() { b.depth-- }()
 	if len(b.unread) == 0 {
 		// Optimization: Try to read indirect object/reference without boxing integers
 		if obj, ok := b.tryReadIndirect(); ok {
@@ -566,14 +576,11 @@ func (b *buffer) readObject() Object {
 		return Object{Kind: Null}
 	}
 
-	if tok.Kind == String && b.key != nil && b.objptr.id != 0 {
-		var err error
-		str := tok.StringVal
-		decrypted, err := decryptString(b.key, b.useAES, b.encVersion, b.objptr, str)
-		if err != nil {
-			panic(err)
+	if tok.Kind == String {
+		if b.key == nil || b.objptr.id == 0 {
+			return tok
 		}
-		return Object{Kind: String, StringVal: decrypted}
+		return b.decrypt(tok)
 	}
 
 	if !b.allowObjptr {
@@ -753,7 +760,7 @@ func (b *buffer) readArray() Object {
 		if obj.Kind == Keyword && obj.KeywordVal == "]" {
 			break
 		}
-		if obj.Kind == Null && b.eof {
+		if obj.Kind == Null && (b.eof || len(b.unread) > 0 && b.unread[len(b.unread)-1].KeywordVal == "endobj") {
 			break
 		}
 		x = append(x, obj)
@@ -777,7 +784,23 @@ func (b *buffer) readDict() Object {
 			continue
 		}
 		n := tok.NameVal
+		if n == "Contents" && b.key != nil {
+			// A signature's Contents string is not encrypted, and whether this is a
+			// signature dictionary is known only after the whole dictionary is read.
+			v := b.readToken()
+			if v.Kind == String {
+				x[n] = v
+				continue
+			}
+			b.unreadToken(v)
+		}
 		x[n] = b.readObject()
+	}
+
+	if b.key != nil {
+		if c := x["Contents"]; c.Kind == String && !isSignatureDict(x) {
+			x["Contents"] = b.decrypt(c)
+		}
 	}
 
 	if !b.allowStream {
@@ -809,6 +832,31 @@ func (b *buffer) readDict() Object {
 		DictVal:      x,
 		StreamOffset: b.readOffset(),
 	}
+}
+
+func (b *buffer) decrypt(s Object) Object {
+	if b.key == nil || b.objptr.id == 0 {
+		return s
+	}
+	return Object{Kind: String, StringVal: decryptString(b.key, b.useAES, b.encVersion, b.objptr, s.StringVal)}
+}
+
+// maxNesting limits nested objects, such as arrays, dictionaries and indirect
+// object definitions, which would otherwise overflow the stack.
+const maxNesting = 1000
+
+func (b *buffer) nest() {
+	if b.depth++; b.depth > maxNesting {
+		b.errorf("malformed PDF: nesting deeper than %d", maxNesting)
+	}
+}
+
+func isSignatureDict(d map[string]Object) bool {
+	switch d["Type"].NameVal {
+	case "Sig", "DocTimeStamp":
+		return true
+	}
+	return d["ByteRange"].Kind == Array && d["Filter"].Kind == Name
 }
 
 func isSpace(b byte) bool {

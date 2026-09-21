@@ -353,10 +353,3 @@ func downloadFile(url, destPath string) error {
 	_, err = io.Copy(out, resp.Body)
 	return err
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

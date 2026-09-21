@@ -39,6 +39,21 @@ Decode:
 	return string(r)
 }
 
+func pdfDocEncode(s string) ([]byte, bool) {
+	b := make([]byte, 0, len(s))
+Runes:
+	for _, r := range s {
+		for i, e := range pdfDocEncoding {
+			if e == r && e != noRune {
+				b = append(b, byte(i))
+				continue Runes
+			}
+		}
+		return nil, false
+	}
+	return b, true
+}
+
 func isUTF16(s string) bool {
 	return len(s) >= 2 && s[0] == 0xfe && s[1] == 0xff && len(s)%2 == 0
 }

@@ -178,6 +178,11 @@ type Ptr struct {
 	gen uint16
 }
 
+// NewPtr returns a reference to the object with the given number and generation.
+func NewPtr(id uint32, gen uint16) Ptr {
+	return Ptr{id: id, gen: gen}
+}
+
 // GetID returns the object number.
 func (p Ptr) GetID() uint32 {
 	return p.id
